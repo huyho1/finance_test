@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Price Checker</title>
+    <style>
+        form {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        #symbol {
+            width: 500px;
+        }
+
+        #suggestions {
+            border: 1px solid #ccc;
+            position: absolute;
+            width: 100%;
+            max-height: 300px;
+            overflow-y: auto;
+            background-color: white;
+            display: none;
+            z-index: 1000;
+            top: 100%;
+            left: 0;
+        }
+
+        .suggestion-item {
+            padding: 10px;
+            cursor: pointer;
+        }
+
+        .suggestion-item:hover,
+        .suggestion-item.active {
+            background-color: #f0f0f0;
+        }
+
+        .error-message {
+            color: red;
+        }
+
+        .input-wrapper {
+            position: relative;
+            width: 500px;
+        }
+
+        #main-container {
+            display: flex;
+            gap: 20px;
+            width: 100%;
+            margin-top: 20px;
+        }
+
+        #chart-container {
+            width: 50%;
+        }
+
+        #info-container {
+            width: 50%;
+            padding: 15px;
+        }
+
+        #info-container h4 {
+            margin-bottom: 10px;
+        }
+
+        #info-container ul {
+            list-style-type: none;
+            padding: 0;
+        }
+
+        #info-container li {
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Stock Price</h1>
+    <form method="POST" onsubmit="handleSubmit(event)">
+        <label for="symbol">Enter Stock Symbol or Company Name:</label>
+        <div class="input-wrapper">
+            <input type="text" id="symbol" name="symbol" oninput="searchStocks()" required autocomplete="off">
+            <div id="suggestions"></div>
+        </div>
+        <button type="submit">Search</button>
+    </form>
+    <span id="market-status"></span>
+
+    <br> <!-- Added line break here -->
+
+    <h2 id="company-info"></h2> <!-- Company name and ticker will be displayed here -->
+    <hr>
+    <h3 id="stock-price"></h3> <!-- Stock price will be displayed here -->
+    <h5 id="current-price-label"></h5> 
+
+    <!-- Main container to hold chart and info side by side -->
+    <div id="main-container">
+        <!-- Chart container -->
+        <div id="chart-container">
+            <div style="margin-bottom: 10px;" style="display: none;">
+                <button onclick="updateChartView('1d')">1D</button>
+                <button onclick="updateChartView('5d')">5D</button>
+                <button onclick="updateChartView('1mo')">1M</button>
+                <button onclick="updateChartView('1y')">1Y</button> 
+                <button onclick="updateChartView('5y')">5Y</button>
+            </div>        
+            <canvas id="stock-chart" width="600" height="300"></canvas>
+        </div>
+
+        <!-- Info container -->
+        <div id="info-container" style="display: none;">
+            <h4>Additional Info</h4>
+            <ul id="stock-info">
+                <li><strong>Market Cap:</strong> <span id="market-cap">-</span></li>
+                <li><strong>P/E Ratio:</strong> <span id="pe-ratio">-</span></li>
+                <li><strong>Dividend Yield:</strong> <span id="dividend-yield">-</span></li>
+                <li><strong>52-Week High:</strong> <span id="52-week-high">-</span></li>
+                <li><strong>52-Week Low:</strong> <span id="52-week-low">-</span></li>
+            </ul>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        let currentIndex = -1;
+        let priceUpdateInterval;
+        let chart;
+        let prices = [];
+        let labels = [];
+        const chartUpdateInterval = 1 * 60 * 1000; // 1 minute in milliseconds
+
+        // Function to check and display market status and countdown
+        function updateMarketStatus() {
+            const marketStatusDisplay = document.getElementById("market-status");
+            const now = new Date();
+            const options = { timeZone: "America/New_York" };
+            const etcNow = new Date(now.toLocaleString("en-US", options));
+            const currentDay = etcNow.getDay(); // 0 is Sunday, 6 is Saturday
+            const currentHour = etcNow.getHours();
+            const currentMinute = etcNow.getMinutes();
+
+            let marketOpenTime, marketOpenLabel;
+            
+            if (currentDay === 0 || currentDay === 6 || (currentDay === 5 && currentHour >= 16)) {
+                // If it's the weekend or Friday after market close, next open is Monday 9:30 AM ET
+                marketOpenTime = new Date(etcNow);
+                marketOpenTime.setDate(etcNow.getDate() + ((8 - currentDay) % 7)); // Move to Monday
+                marketOpenTime.setHours(9, 30, 0, 0); // Set to 9:30 AM ET
+                marketOpenLabel = "Market is CLOSED";
+            } else if ((currentHour < 9 || (currentHour === 9 && currentMinute < 30)) || currentHour >= 16) {
+                // If it's before 9:30 AM or after 4:00 PM on a weekday, set to open at 9:30 AM the next day
+                marketOpenTime = new Date(etcNow);
+                if (currentHour >= 16) marketOpenTime.setDate(etcNow.getDate() + 1); // Next day
+                marketOpenTime.setHours(9, 30, 0, 0);
+                marketOpenLabel = "Market is CLOSED";
+            } else {
+                // Market is open
+                marketStatusDisplay.textContent = "Market is OPEN";
+                marketStatusDisplay.style.color = "green";
+                return;
+            }
+
+            // Calculate time difference
+            const timeUntilOpen = marketOpenTime - etcNow;
+            const hours = Math.floor(timeUntilOpen / (1000 * 60 * 60));
+            const minutes = Math.floor((timeUntilOpen % (1000 * 60 * 60)) / (1000 * 60));
+
+            // Update the market status display with the countdown
+            marketStatusDisplay.textContent = `${marketOpenLabel} - Opens in ${hours}h ${minutes}m`;
+            marketStatusDisplay.style.color = "red";
+        }
+
+        // Run market status check on page load and every minute
+        updateMarketStatus();
+        setInterval(updateMarketStatus, 60 * 1000);
+
+        async function searchStocks() {
+            const query = document.getElementById("symbol").value;
+            const suggestionsBox = document.getElementById("suggestions");
+
+            if (query.length < 1) {
+                suggestionsBox.style.display = "none";
+                return;
+            }
+
+            const response = await fetch(`/get_symbols?query=${query}`);
+            const symbols = await response.json();
+
+            suggestionsBox.innerHTML = "";
+            currentIndex = -1;
+
+            if (symbols.length > 0) {
+                suggestionsBox.style.display = "block";
+                symbols.forEach((item, index) => {
+                    const [symbol, companyName] = item.split(',');
+                    const suggestionItem = document.createElement("div");
+                    suggestionItem.className = "suggestion-item";
+                    suggestionItem.textContent = item;
+                    suggestionItem.onclick = () => {
+                        document.getElementById("symbol").value = symbol;
+                        suggestionsBox.style.display = "none";
+                        startPriceUpdates(symbol, companyName);
+                    };
+                    suggestionsBox.appendChild(suggestionItem);
+                });
+            } else {
+                suggestionsBox.style.display = "none";
+            }
+        }
+
+        let lastPrice = null;  // Initialize a global variable to store the last price
+
+        async function fetchStockPrice(symbol) {
+            const stockPriceDisplay = document.getElementById("stock-price");
+            const currentPriceLabel = document.getElementById("current-price-label");
+            const chartContainer = document.getElementById("chart-container");
+            const infoContainer = document.getElementById("info-container");
+            const companyInfo = document.getElementById("company-info");
+
+            // Clear any existing error message
+            const existingError = document.querySelector(".error-message");
+            if (existingError) {
+                existingError.remove();
+            }
+
+            const response = await fetch(`/get_price?symbol=${symbol}`);
+            const data = await response.json();
+
+            if (data.price) {
+                let priceSpan = document.createElement("span");
+                priceSpan.className = "price-span";
+                priceSpan.textContent = `$${data.price.toFixed(2)}`;
+
+                // Calculate and display the difference from the initial chart price
+                if (initialChartPrice !== null) {
+                    const priceDifference = (data.price - initialChartPrice).toFixed(2);
+                    const differenceSpan = document.createElement("span");
+
+                    const percentage = (((data.price/initialChartPrice)-1)*100).toFixed(2);
+
+                    if (priceDifference < 0) {
+                        differenceSpan.textContent = ` ${priceDifference} (${percentage}%)`;
+                    }
+                    else {
+                        differenceSpan.textContent = ` +${priceDifference} (+${percentage}%)`;
+                    }
+
+                    if (priceDifference > 0) {
+                        differenceSpan.style.color = "green"; // Green for positive change
+                    } else if (priceDifference < 0) {
+                        differenceSpan.style.color = "red"; // Red for negative change
+                    } else {
+                        differenceSpan.style.color = "black"; // No change
+                    }
+                    priceSpan.appendChild(differenceSpan);
+                }
+
+                stockPriceDisplay.textContent = "Current Price: ";
+                stockPriceDisplay.appendChild(priceSpan);
+                stockPriceDisplay.classList.remove("error-message");
+
+                currentPriceLabel.style.display = "block";
+                chartContainer.style.display = "block";
+                infoContainer.style.display = "block";
+
+                // Time and date display (existing code)
+                const now = new Date();
+                const options = { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false };
+                const optionsDate = { timeZone: "America/New_York", year: "numeric", month: "long", day: "numeric" };
+
+                const etcTime = new Intl.DateTimeFormat("en-US", options).format(now);
+                const closingDate = new Intl.DateTimeFormat("en-US", optionsDate).format(now);
+                const [hours, minutes] = etcTime.split(":").map(Number);
+
+                if ((hours > 9 || (hours === 9 && minutes >= 30)) && hours < 16) {
+                    currentPriceLabel.textContent = `As of: ${etcTime} on ${closingDate}`;
+                } else {
+                    const closingTime = "16:00";
+                    currentPriceLabel.textContent = `At close: ${closingTime} on ${closingDate}`;
+                }
+            } else {
+                stockPriceDisplay.textContent = "";
+                currentPriceLabel.style.display = "none";
+                companyInfo.textContent = "";
+                chartContainer.style.display = "none";
+                infoContainer.style.display = "none";
+
+                document.getElementById("market-cap").textContent = data.marketCap || "N/A";
+                document.getElementById("volume").textContent = data.volume || "N/A";
+                document.getElementById("pe-ratio").textContent = data.peRatio || "N/A";
+
+                stopPriceUpdates();
+
+                const errorMessage = document.createElement("div");
+                errorMessage.className = "error-message";
+                errorMessage.textContent = "Please select a valid stock.";
+                document.body.appendChild(errorMessage);
+            }
+        }
+
+        function updateChartView(range) {
+            const symbol = document.getElementById("symbol").value;
+            if (symbol) {
+                fetchStockChart(symbol, range);
+            }
+        }
+
+        let initialChartPrice = null;
+
+        async function fetchStockChart(symbol, range = '1d') {
+            const response = await fetch(`/get_chart_data?symbol=${symbol}&range=${range}`);
+            const data = await response.json();
+
+            // Store the initial price when the chart data loads
+            initialChartPrice = data.prices[0];
+
+            const ctx = document.getElementById('stock-chart').getContext('2d');
+            if (chart) {
+                chart.destroy();
+            }
+
+            // Set grid and label intervals based on the range
+            let gridInterval, labelInterval, customLabelCallback;
+            if (range === '1d') {
+                gridInterval = 30;  // Every 30 minutes
+                labelInterval = 30;
+            } else if (range === '5d') {
+                gridInterval = 26; // Every day
+                labelInterval = 26;
+
+                customLabelCallback = function(value, index) {
+                    if (index % labelInterval === 0) {
+                        const date = new Date(data.labels[index]);
+                        return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+                    }
+                    return ''; 
+                };
+            } else if (range === '1mo') {
+                gridInterval = 5;  
+                labelInterval = 5;
+
+                customLabelCallback = function(value, index) {
+                    if (index % labelInterval === 0) {
+                        const date = new Date(data.labels[index]);
+                        return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+                    }
+                    return ''; 
+                };
+            } else if (range === '1y') {
+                gridInterval = 1000;
+                labelInterval = 30;
+
+                // Only show labels at the beginning of each month for 1Y range
+                customLabelCallback = function(value, index) {
+                    const date = new Date(data.labels[index]);
+                    const dayOfMonth = date.getDate();
+                    const month = date.getMonth();
+
+                    // Check if this is the first entry for the month
+                    if (index === 0 || new Date(data.labels[index - 1]).getMonth() !== month) {
+                        // This is either the first data point or the first data point of a new month
+                        const date = new Date(data.labels[index]);
+                        return date.toLocaleString('default', { month: 'short' });
+                    }
+                    return ''; // Skip all other days within the month
+                };
+            } else if (range === '5y') {
+                gridInterval = 5000; // Increase for a sparse grid
+                labelInterval = 120; // Set fewer label intervals to avoid clutter
+
+                // Update custom label callback function
+                customLabelCallback = function(value, index) {
+                    const date = new Date(data.labels[index]);
+                    const month = date.getMonth();
+                    
+                    // Label every January for each year in the 5-year chart
+                    if (month === 0 && (index === 0 || new Date(data.labels[index - 1]).getFullYear() !== date.getFullYear())) {
+                        return date.getFullYear(); // Only show the year at the beginning of each year
+                    }
+                    return ''; // Skip other labels to reduce clutter
+                };
+            }
+
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.labels,
+                    datasets: [{
+                        label: 'Stock Price',
+                        data: data.prices,
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        borderWidth: 1,
+                        fill: false,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    scales: {
+                        x: {
+                            type: 'category',
+                            grid: {
+                                color: function(context) {
+                                    return context.index % gridInterval === 0 ? 'rgba(0, 0, 0, 0.1)' : 'rgba(0, 0, 0, 0)';
+                                },
+                                drawBorder: false
+                            },
+                            ticks: {
+                                autoSkip: false,
+                                callback: function(value, index) {
+                                    if (range === '5d') {
+                                        return customLabelCallback(value, index);
+                                    }
+                                    if (range === '1mo') {
+                                        return customLabelCallback(value, index);
+                                    }
+                                    if (range === '1y') {
+                                        return customLabelCallback(value, index);
+                                    }
+
+                                    // Show only the first day of each year in 5-year range
+                                    else if (range === '5y') {
+                                        return customLabelCallback(value, index);
+                                    }
+                                    
+                                    return index % labelInterval === 0 ? data.labels[index] : '';
+                                }
+                            }
+                        },
+                        y: {
+                            beginAtZero: false
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            enabled: true,
+                            mode: 'index',
+                            intersect: false,
+                            callbacks: {
+                                label: function(context) {
+                                    const price = context.dataset.data[context.dataIndex];
+                                    return `Price: $${price.toFixed(2)}`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function startPriceUpdates(symbol, companyName) {
+            stopPriceUpdates();
+            fetchStockPrice(symbol);
+            fetchStockChart(symbol, '1d');  // Load 1-day chart initially
+            document.getElementById("company-info").textContent = `${companyName} (${symbol})`;
+            priceUpdateInterval = setInterval(() => fetchStockPrice(symbol), 500);
+            setInterval(updateChart, chartUpdateInterval);
+        }
+
+        function stopPriceUpdates() {
+            if (priceUpdateInterval) {
+                clearInterval(priceUpdateInterval);
+                priceUpdateInterval = null;
+            }
+        }
+
+        function handleSubmit(event) {
+            event.preventDefault();
+            const symbol = document.getElementById("symbol").value;
+            if (symbol) {
+                startPriceUpdates(symbol);
+            }
+        }
+
+        document.getElementById("symbol").addEventListener("input", () => {
+            stopPriceUpdates();
+        });
+
+        document.getElementById("symbol").addEventListener("keydown", (event) => {
+            const suggestionsBox = document.getElementById("suggestions");
+            const items = suggestionsBox.querySelectorAll(".suggestion-item");
+
+            if (event.key === "ArrowDown") {
+                currentIndex = (currentIndex + 1) % items.length;
+                highlightItem(items);
+            } else if (event.key === "ArrowUp") {
+                currentIndex = (currentIndex - 1 + items.length) % items.length;
+                highlightItem(items);
+            } else if (event.key === "Enter") {
+                event.preventDefault();
+                if (currentIndex === -1 && items.length > 0) {
+                    currentIndex = 0;
+                }
+                if (currentIndex >= 0 && items[currentIndex]) {
+                    const selectedText = items[currentIndex].textContent.split(',')[0];
+                    const selectedCompanyName = items[currentIndex].textContent.split(',')[1];
+                    document.getElementById("symbol").value = selectedText;
+                    suggestionsBox.style.display = "none";
+                    startPriceUpdates(selectedText, selectedCompanyName.trim());
+                }
+            }
+        });
+
+        function highlightItem(items) {
+            items.forEach((item, index) => {
+                item.style.backgroundColor = index === currentIndex ? "#f0f0f0" : "white";
+            });
+        }
+
+        async function fetchAdditionalInfo(symbol) {
+            const response = await fetch(`/get_additional_info?symbol=${symbol}`);
+            const data = await response.json();
+
+            if (data) {
+                document.getElementById("market-cap").textContent = data.marketCap || '-';
+                document.getElementById("pe-ratio").textContent = data.peRatio || '-';
+                document.getElementById("dividend-yield").textContent = data.dividendYield || '-';
+                document.getElementById("52-week-high").textContent = data.high52Week || '-';
+                document.getElementById("52-week-low").textContent = data.low52Week || '-';
+            }
+        }
+
+        function startPriceUpdates(symbol, companyName) {
+            stopPriceUpdates();
+            fetchStockPrice(symbol);
+            fetchStockChart(symbol, '1d');  // Load 1-day chart initially
+            fetchAdditionalInfo(symbol); // Fetch additional info for the sidebar
+            document.getElementById("company-info").textContent = `${companyName} (${symbol})`;
+            priceUpdateInterval = setInterval(() => fetchStockPrice(symbol), 500);
+        }
+    </script>
+</body>
+</html>
